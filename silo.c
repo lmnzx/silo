@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/ttycom.h>
 #include <termios.h>
@@ -9,11 +10,38 @@
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
+#define SILO_VERSION "0.0.1"
+
+enum editorKey { ARROW_LEFT = 'h', ARROW_RIGHT = 'l', ARROW_UP = 'k', ARROW_DOWN = 'j' };
+
 struct editorConfig {
+    int cx, cy;
     int screenrows;
     int screencols;
     struct termios orig_termios;
 };
+
+#define ABUF_INIT {NULL, 0}
+
+struct abuf {
+    char *b;
+    int len;
+};
+
+void abAppend(struct abuf *ab, const char *s, int len) {
+    char *new = realloc(ab->b, ab->len + len);
+
+    if (new == NULL)
+        return;
+
+    memcpy(&new[ab->len], s, len);
+    ab->b = new;
+    ab->len += len;
+}
+
+void abFree(struct abuf *ab) {
+    free(ab->b);
+}
 
 struct editorConfig E;
 
@@ -54,7 +82,28 @@ char editorReadKey(void) {
         if (nread == -1 && errno != EAGAIN)
             die("read");
     }
-    return c;
+    if (c == '\x1b') {
+        char seq[3];
+        if (read(STDIN_FILENO, &seq[0], 1) != 1)
+            return '\x1b';
+        if (read(STDIN_FILENO, &seq[1], 1) != 1)
+            return '\x1b';
+        if (seq[0] == '[') {
+            switch (seq[1]) {
+            case 'A':
+                return ARROW_UP;
+            case 'B':
+                return ARROW_DOWN;
+            case 'C':
+                return ARROW_RIGHT;
+            case 'D':
+                return ARROW_LEFT;
+            }
+        }
+        return '\x1b';
+    } else {
+        return c;
+    }
 }
 
 int getCursorPosition(int *rows, int *cols) {
@@ -95,23 +144,66 @@ int getWindowSize(int *rows, int *cols) {
     }
 }
 
-void editorDrawRows(void) {
+void editorDrawRows(struct abuf *ab) {
     int y;
     for (y = 0; y < E.screenrows; y++) {
-        write(STDOUT_FILENO, "~", 1);
+        if (y == E.screenrows / 3) {
+            char welcome[80];
+            int welcomelen =
+                snprintf(welcome, sizeof(welcome), "Silo editor -- version %s", SILO_VERSION);
+            if (welcomelen > E.screencols)
+                welcomelen = E.screencols;
+            int padding = (E.screencols - welcomelen) / 2;
+            if (padding) {
+                abAppend(ab, "~", 1);
+                padding--;
+            }
+            while (padding--)
+                abAppend(ab, " ", 1);
+            abAppend(ab, welcome, welcomelen);
+        } else {
+            abAppend(ab, "~", 1);
+        }
+        abAppend(ab, "\x1b[K", 3);
         if (y < E.screenrows - 1) {
-            write(STDOUT_FILENO, "\r\n", 2);
+            abAppend(ab, "\r\n", 2);
         }
     }
 }
 
 void editorRefreshScreen(void) {
-    write(STDOUT_FILENO, "\x1b[2J", 4);
-    write(STDOUT_FILENO, "\x1b[H", 3);
+    struct abuf ab = ABUF_INIT;
 
-    editorDrawRows();
+    abAppend(&ab, "\x1b[?25l", 6);
+    abAppend(&ab, "\x1b[H", 3);
 
-    write(STDOUT_FILENO, "\x1b[H", 3);
+    editorDrawRows(&ab);
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+    abAppend(&ab, buf, strlen(buf));
+
+    abAppend(&ab, "\x1b[?25h", 6);
+
+    write(STDOUT_FILENO, ab.b, ab.len);
+    abFree(&ab);
+}
+
+void editorMoveCursor(char key) {
+    switch (key) {
+    case 'h':
+        E.cx--;
+        break;
+    case 'j':
+        E.cy++;
+        break;
+    case 'k':
+        E.cy--;
+        break;
+    case 'l':
+        E.cx++;
+        break;
+    }
 }
 
 void editorProcessKeypress(void) {
@@ -122,10 +214,20 @@ void editorProcessKeypress(void) {
         write(STDOUT_FILENO, "\x1b[H", 3);
         exit(0);
         break;
+
+    case 'h':
+    case 'j':
+    case 'k':
+    case 'l':
+        editorMoveCursor(c);
+        break;
     }
 }
 
 void initEditor(void) {
+    E.cx = 0;
+    E.cy = 0;
+
     if (getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
 }
