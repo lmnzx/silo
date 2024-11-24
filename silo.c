@@ -12,7 +12,7 @@
 
 #define SILO_VERSION "0.0.1"
 
-enum editorKey { ARROW_LEFT = 'h', ARROW_RIGHT = 'l', ARROW_UP = 'k', ARROW_DOWN = 'j' };
+enum editorKey { ARROW_LEFT = 1000, ARROW_RIGHT, ARROW_UP, ARROW_DOWN, DEL_KEY };
 
 struct editorConfig {
     int cx, cy;
@@ -75,7 +75,7 @@ void enableRawMode(void) {
         die("tcsetattr");
 }
 
-char editorReadKey(void) {
+int editorReadKey(void) {
     int nread;
     char c;
     while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
@@ -89,15 +89,26 @@ char editorReadKey(void) {
         if (read(STDIN_FILENO, &seq[1], 1) != 1)
             return '\x1b';
         if (seq[0] == '[') {
-            switch (seq[1]) {
-            case 'A':
-                return ARROW_UP;
-            case 'B':
-                return ARROW_DOWN;
-            case 'C':
-                return ARROW_RIGHT;
-            case 'D':
-                return ARROW_LEFT;
+            if (seq[1] >= '0' && seq[1] <= '9') {
+                if (read(STDIN_FILENO, &seq[2], 1) != 1)
+                    return '\x1b';
+                if (seq[2] == '~') {
+                    switch (seq[1]) {
+                    case '3':
+                        return DEL_KEY;
+                    }
+                }
+            } else {
+                switch (seq[1]) {
+                case 'A':
+                    return ARROW_UP;
+                case 'B':
+                    return ARROW_DOWN;
+                case 'C':
+                    return ARROW_RIGHT;
+                case 'D':
+                    return ARROW_LEFT;
+                }
             }
         }
         return '\x1b';
@@ -189,25 +200,34 @@ void editorRefreshScreen(void) {
     abFree(&ab);
 }
 
-void editorMoveCursor(char key) {
+void editorMoveCursor(int key) {
     switch (key) {
-    case 'h':
-        E.cx--;
+    case ARROW_LEFT:
+        if (E.cx != 0) {
+            E.cx--;
+        }
         break;
-    case 'j':
-        E.cy++;
+    case ARROW_RIGHT:
+        if (E.cx != E.screencols - 1) {
+            E.cx++;
+        }
         break;
-    case 'k':
-        E.cy--;
+    case ARROW_DOWN:
+        if (E.cy != E.screenrows - 1) {
+            E.cy++;
+        }
         break;
-    case 'l':
-        E.cx++;
+    case ARROW_UP:
+        if (E.cy != 0) {
+            E.cy--;
+        }
         break;
     }
 }
 
 void editorProcessKeypress(void) {
-    char c = editorReadKey();
+    int c = editorReadKey();
+
     switch (c) {
     case CTRL_KEY('q'):
         write(STDOUT_FILENO, "\x1b[2J", 4);
@@ -215,10 +235,10 @@ void editorProcessKeypress(void) {
         exit(0);
         break;
 
-    case 'h':
-    case 'j':
-    case 'k':
-    case 'l':
+    case ARROW_LEFT:
+    case ARROW_DOWN:
+    case ARROW_UP:
+    case ARROW_RIGHT:
         editorMoveCursor(c);
         break;
     }
